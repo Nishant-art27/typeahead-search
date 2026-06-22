@@ -1,7 +1,14 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+
+# Local data / SQLite (regenerated from data/queries.csv on first run)
 data/*.csv
-data/*.db
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# OS
 .DS_Store
