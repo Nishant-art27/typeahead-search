@@ -14,29 +14,112 @@ engines and e-commerce sites — built around four data-system ideas the
 It ships with a clean web UI (debounced suggestions, keyboard navigation,
 trending board, and a live system dashboard) and a synthetic 120k-query dataset.
 
-```
-┌──────────────┐   GET /suggest?q=     ┌───────────────────────────────────────┐
-│   Web UI     │ ────────────────────▶ │              FastAPI app                │
-│ (debounced,  │   POST /search        │                                         │
-│  keyboard,   │ ◀──────────────────── │  ┌────────────┐  miss   ┌────────────┐  │
-│  trending,   │   {"message":         │  │ Distributed│ ──────▶ │   Trie     │  │
-│  dashboard)  │     "Searched"}       │  │   Cache    │ ◀────── │   index    │  │
-└──────────────┘                       │  │ (consistent│  fill   │ (top-K per │  │
-                                       │  │  hashing)  │         │   node)    │  │
-                                       │  └────────────┘         └─────┬──────┘  │
-                                       │        ▲   invalidate          │ rebuild │
-                                       │        │                       │ on boot │
-                                       │  ┌─────┴───────┐   flush  ┌─────▼──────┐  │
-                                       │  │ Batch writer│ ───────▶ │  SQLite    │  │
-                                       │  │ (aggregate) │  (bulk)  │  primary   │  │
-                                       │  └─────────────┘          │  store     │  │
-                                       │     ▲ recency tracker     └────────────┘  │
-                                       │     │ (time-decay) ──▶ /trending           │
-                                       └───────────────────────────────────────────┘
+## Contents
+
+- [Architecture](#architecture) · [Request flows](#request-flows)
+- [Quick start](#quick-start) · [Using it](#using-it)
+- [API](#api) · [Performance](#performance) · [Configuration](#configuration)
+- [Dataset](#dataset) · [Project layout](#project-layout) · [Tests](#tests)
+- [Assignment mapping](#assignment-mapping)
+
+For the full design rationale and trade-offs, see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md); for endpoint contracts,
+[`docs/API.md`](docs/API.md).
+
+---
+
+## Architecture
+
+Three serving layers, fastest first — **distributed cache → Trie index → SQLite
+store** — plus a recency tracker and a batch writer running alongside.
+
+```mermaid
+flowchart LR
+    UI["🖥️ Web UI<br/>debounced · keyboard nav<br/>trending · live dashboard"]
+
+    subgraph APP["FastAPI application"]
+        direction TB
+        CACHE["🗂️ Distributed cache<br/>logical LRU + TTL nodes<br/>routed by consistent hashing"]
+        TRIE["🌳 Trie index<br/>cached top-K per node"]
+        RECENCY["⏱️ Recency tracker<br/>time-decay scores"]
+        BATCH["✍️ Batch writer<br/>buffer + aggregate"]
+        STORE[("💾 SQLite<br/>primary store")]
+    end
+
+    UI -->|GET /suggest| CACHE
+    CACHE -->|miss| TRIE
+    TRIE -->|fill result| CACHE
+    STORE -.->|index built on boot| TRIE
+    UI -->|POST /search ⇒ Searched| BATCH
+    UI -->|POST /search| RECENCY
+    BATCH -->|flush · bulk upsert| STORE
+    BATCH -->|refresh counts| TRIE
+    BATCH -->|invalidate prefixes| CACHE
+    RECENCY -->|GET /trending| UI
+
+    classDef hot fill:#fff1e6,stroke:#f97316,color:#1b1c2a;
+    classDef cool fill:#eef0ff,stroke:#6366f1,color:#1b1c2a;
+    class CACHE hot;
+    class TRIE,STORE cool;
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design write-up
-and [`docs/API.md`](docs/API.md) for endpoint contracts.
+| Layer | Role | Why |
+| --- | --- | --- |
+| **Distributed cache** | Caches finished suggestion lists per prefix, sharded by a consistent-hash ring. | Hot prefixes never touch the index; the ring keeps scaling cheap. |
+| **Trie index** | In-memory prefix tree; each node caches its top-K completions. | Turns "suggest for *p*" into an O(len *p*) lookup, no per-keystroke sort. |
+| **SQLite store** | Durable source of truth for `query → count`, written only in batches. | Real persistence with zero setup; never on the read path. |
+| **Recency tracker** | Per-query time-decayed counters. | Powers trending + recency-aware ranking; forgets old spikes. |
+| **Batch writer** | Buffers + aggregates searches, flushes in bulk. | Turns N searches into far fewer DB writes. |
+
+### Request flows
+
+**Reading a suggestion** — cache first, fall back to the index on a miss:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User (browser)
+    participant A as FastAPI
+    participant C as Distributed cache
+    participant T as Trie index
+
+    U->>A: GET /suggest?q=iph (debounced 160ms)
+    A->>C: get key "r1:iph" — consistent-hash picks the node
+    alt cache hit (hot prefix)
+        C-->>A: cached top-10
+    else cache miss
+        C-->>A: nothing
+        A->>T: top-K candidates for "iph"
+        T-->>A: up to 25 candidates, by count
+        A->>A: re-rank by popularity + recency, keep 10
+        A->>C: set "r1:iph" with TTL
+    end
+    A-->>U: 10 suggestions (source = cache or index)
+```
+
+**Submitting a search** — instant response, durable write happens later in a batch:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User (browser)
+    participant A as FastAPI
+    participant R as Recency tracker
+    participant B as Batch writer
+    participant S as SQLite store
+    participant T as Trie index
+    participant C as Distributed cache
+
+    U->>A: POST /search {query}
+    A->>R: record search (decayed +1) — instant
+    A->>B: enqueue (buffer + aggregate duplicates)
+    A-->>U: {"message":"Searched"}
+    Note over B: flush trigger — every 2s OR 500 distinct queries
+    B->>S: bulk upsert aggregated deltas (one transaction)
+    S-->>B: new authoritative counts
+    B->>T: refresh counts (monotonic update)
+    B->>C: invalidate affected prefixes
+```
 
 ### Screenshots
 
@@ -87,7 +170,7 @@ uvicorn app.main:app --reload
   consistent-hash router you can probe by prefix.
 
 Keyboard: `↓`/`↑` move through suggestions, `Enter` searches the highlighted one,
-`Esc` closes the dropdown.
+`Esc` closes the dropdown. Tip: deep-link a prefilled box with `/?q=iphone`.
 
 ---
 
@@ -177,6 +260,11 @@ columns at `data/queries.csv` and restart — the loader reads any such file.
 
 ## Project layout
 
+> **New here?** Read in this order: `service.py` (the request flows) →
+> `trie.py` → `consistent_hash.py` → `distributed_cache.py` → `ranking.py` →
+> `batch_writer.py`. Every module starts with a docstring explaining *why* it
+> exists, not just what it does.
+
 ```
 app/
   config.py            # all tunables (env-overridable)
@@ -193,7 +281,7 @@ static/                # web UI (index.html, styles.css, app.js)
 scripts/
   generate_dataset.py  # dataset generator
   benchmark.py         # performance benchmark
-docs/                  # ARCHITECTURE.md, API.md
+docs/                  # ARCHITECTURE.md, API.md, screenshots/
 tests/                 # unit tests for the core data structures
 ```
 

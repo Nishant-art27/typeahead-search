@@ -7,11 +7,21 @@ short answer to "why this and not the obvious alternative?")
 
 ## 1. The big picture
 
-Three layers serve a suggestion, fastest first:
+Three layers serve a suggestion, fastest first; two background concerns
+(recency, batching) sit alongside:
 
-```
-request ─▶ Distributed Cache ──miss──▶ Trie index ──(counts from)──▶ SQLite store
-              (result cache)            (candidate gen)               (source of truth)
+```mermaid
+flowchart LR
+    REQ([suggest request]) --> CACHE["Distributed cache<br/>result cache"]
+    CACHE -->|miss| TRIE["Trie index<br/>candidate generation"]
+    TRIE -.->|derived on boot| STORE[("SQLite<br/>source of truth")]
+
+    SRCH([search request]) --> REC["Recency tracker<br/>time-decay"]
+    SRCH --> BW["Batch writer<br/>buffer + aggregate"]
+    BW -->|flush, bulk| STORE
+    BW -->|refresh counts| TRIE
+    BW -->|invalidate| CACHE
+    REC --> TREND([GET /trending])
 ```
 
 - **SQLite** is the durable source of truth for `query → count`. It is written
