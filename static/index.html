@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Search Typeahead</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="bg-orbs" aria-hidden="true"><span></span><span></span><span></span></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⌕</span>
+      <span class="brand-name">Typeahead</span>
+      <span class="brand-tag">low-latency search suggestions</span>
+    </div>
+    <button id="dashToggle" class="ghost-btn" type="button" aria-expanded="true">
+      <span class="dot" id="healthDot"></span> System dashboard
+    </button>
+  </header>
+
+  <main class="stage">
+    <section class="hero">
+      <h1>What are you searching for?</h1>
+      <p class="sub">Type a prefix — suggestions are served from a distributed cache,
+        ranked by popularity and recency.</p>
+
+      <form id="searchForm" class="search-wrap" autocomplete="off" role="search">
+        <div class="search-box" id="searchBox">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input
+            id="searchInput"
+            type="text"
+            placeholder="Try “iphone”, “python”, “best laptop”…"
+            aria-label="Search"
+            aria-autocomplete="list"
+            aria-controls="suggestions"
+            aria-expanded="false"
+            spellcheck="false" />
+          <span class="spinner" id="spinner" hidden></span>
+          <button type="submit" class="go-btn" aria-label="Search">Search</button>
+
+          <ul id="suggestions" class="suggestions" role="listbox" hidden></ul>
+        </div>
+
+        <div class="mode-row">
+          <span class="mode-label">Ranking</span>
+          <div class="seg" role="tablist" aria-label="Ranking mode">
+            <button type="button" class="seg-btn active" data-recency="true" role="tab">
+              Trending <em>recency-aware</em>
+            </button>
+            <button type="button" class="seg-btn" data-recency="false" role="tab">
+              Popularity <em>all-time</em>
+            </button>
+          </div>
+          <span class="src-pill" id="sourcePill" title="Where the last result came from">—</span>
+        </div>
+      </form>
+
+      <div id="toast" class="toast" hidden></div>
+    </section>
+
+    <section class="panel trending-panel">
+      <div class="panel-head">
+        <h2>🔥 Trending now</h2>
+        <span class="hint">recency-weighted · updates as you search</span>
+      </div>
+      <div id="trendingChips" class="chips">
+        <span class="empty">Search a few queries to see trends appear.</span>
+      </div>
+    </section>
+
+    <section class="panel dash" id="dashboard">
+      <div class="panel-head">
+        <h2>📊 System dashboard</h2>
+        <span class="hint">live metrics · refreshes every 2s</span>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric"><span class="m-val" id="mIndexed">—</span><span class="m-lbl">queries indexed</span></div>
+        <div class="metric"><span class="m-val" id="mHit">—</span><span class="m-lbl">cache hit rate</span></div>
+        <div class="metric"><span class="m-val" id="mP95">—</span><span class="m-lbl">suggest p95 latency</span></div>
+        <div class="metric"><span class="m-val" id="mP50">—</span><span class="m-lbl">suggest p50 latency</span></div>
+        <div class="metric"><span class="m-val" id="mSearches">—</span><span class="m-lbl">searches received</span></div>
+        <div class="metric"><span class="m-val" id="mWrites">—</span><span class="m-lbl">DB rows written</span></div>
+        <div class="metric highlight"><span class="m-val" id="mReduction">—</span><span class="m-lbl">write reduction (batching)</span></div>
+        <div class="metric"><span class="m-val" id="mBuffer">—</span><span class="m-lbl">pending in write buffer</span></div>
+      </div>
+
+      <div class="dash-cols">
+        <div class="dash-card">
+          <h3>Distributed cache nodes <small>routed by consistent hashing</small></h3>
+          <div id="cacheNodes" class="nodes"></div>
+        </div>
+
+        <div class="dash-card">
+          <h3>Consistent-hash router <small>GET /cache/debug</small></h3>
+          <div class="debug-row">
+            <input id="debugInput" type="text" placeholder="prefix e.g. iph" spellcheck="false" />
+            <button id="debugBtn" type="button" class="ghost-btn small">Locate</button>
+          </div>
+          <div id="debugOut" class="debug-out">
+            <span class="empty">Enter a prefix to see which cache node owns its key.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Trie index · consistent-hash distributed cache · recency ranking · batched writes</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
